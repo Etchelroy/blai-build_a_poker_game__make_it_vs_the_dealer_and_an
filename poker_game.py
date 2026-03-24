@@ -1,19 +1,34 @@
 import pygame
 import random
-import sys
 from enum import Enum
-from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from collections import defaultdict
 
-# ============================================================================
-# CONSTANTS & ENUMS
-# ============================================================================
+pygame.init()
 
-WINDOW_WIDTH = 1200
-WINDOW_HEIGHT = 800
+# Constants
+WINDOW_WIDTH = 1400
+WINDOW_HEIGHT = 900
 FPS = 60
-CARD_WIDTH = 60
-CARD_HEIGHT = 90
+
+# Colors
+COLOR_BG = (34, 139, 34)
+COLOR_CARD_BG = (220, 220, 220)
+COLOR_TEXT = (255, 255, 255)
+COLOR_BUTTON = (70, 130, 180)
+COLOR_BUTTON_HOVER = (100, 160, 210)
+COLOR_BUTTON_PRESS = (50, 100, 150)
+COLOR_CHIP_PLAYER = (255, 100, 100)
+COLOR_CHIP_NPC = (100, 100, 255)
+COLOR_CHIP_DEALER = (255, 215, 0)
+COLOR_POT = (255, 200, 0)
+
+class GamePhase(Enum):
+    PREFLOP = "preflop"
+    FLOP = "flop"
+    TURN = "turn"
+    RIVER = "river"
+    SHOWDOWN = "showdown"
+    GAME_OVER = "game_over"
 
 class Suit(Enum):
     HEARTS = "♥"
@@ -21,641 +36,535 @@ class Suit(Enum):
     CLUBS = "♣"
     SPADES = "♠"
 
-class Rank(Enum):
-    TWO = 2
-    THREE = 3
-    FOUR = 4
-    FIVE = 5
-    SIX = 6
-    SEVEN = 7
-    EIGHT = 8
-    NINE = 9
-    TEN = 10
-    JACK = 11
-    QUEEN = 12
-    KING = 13
-    ACE = 14
-
-class GamePhase(Enum):
-    PRE_FLOP = 1
-    FLOP = 2
-    TURN = 3
-    RIVER = 4
-    SHOWDOWN = 5
-    HAND_OVER = 6
-
-class ActionType(Enum):
-    FOLD = 1
-    CHECK = 2
-    CALL = 3
-    RAISE = 4
-    ALL_IN = 5
-
-# ============================================================================
-# CARD & DECK
-# ============================================================================
-
-@dataclass
 class Card:
-    suit: Suit
-    rank: Rank
+    RANKS = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2']
+    RANK_VALUES = {rank: 14 - i for i, rank in enumerate(RANKS)}
     
-    def __str__(self):
-        rank_names = {
-            2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8", 9: "9",
-            10: "T", 11: "J", 12: "Q", 13: "K", 14: "A"
-        }
-        return f"{rank_names[self.rank.value]}{self.suit.value}"
+    def __init__(self, rank, suit):
+        self.rank = rank
+        self.suit = suit
+    
+    def __repr__(self):
+        return f"{self.rank}{self.suit.value}"
     
     def __eq__(self, other):
-        return self.suit == other.suit and self.rank == other.rank
-
-class Deck:
-    def __init__(self):
-        self.cards = [Card(suit, rank) for suit in Suit for rank in Rank]
-        random.shuffle(self.cards)
-    
-    def draw(self) -> Card:
-        return self.cards.pop() if self.cards else None
-
-# ============================================================================
-# HAND EVALUATION
-# ============================================================================
+        return self.rank == other.rank and self.suit == other.suit
 
 class HandEvaluator:
     @staticmethod
-    def evaluate(cards: List[Card]) -> Tuple[int, str]:
-        """
-        Evaluates a 7-card hand and returns (score, hand_name).
-        Higher score = better hand.
-        """
-        if len(cards) < 5:
-            return (0, "")
+    def evaluate(cards):
+        """Evaluate 5-card hand, return score (higher is better)"""
+        if len(cards) != 5:
+            return 0
         
-        # Generate all 5-card combinations
-        from itertools import combinations
-        best_score = 0
-        best_name = ""
-        
-        for combo in combinations(cards, 5):
-            score, name = HandEvaluator._evaluate_five(list(combo))
-            if score > best_score:
-                best_score = score
-                best_name = name
-        
-        return (best_score, best_name)
-    
-    @staticmethod
-    def _evaluate_five(cards: List[Card]) -> Tuple[int, str]:
-        """Evaluate a specific 5-card hand."""
-        ranks = sorted([c.rank.value for c in cards], reverse=True)
-        suits = [c.suit for c in cards]
+        ranks = [Card.RANK_VALUES[card.rank] for card in cards]
+        suits = [card.suit for card in cards]
         
         is_flush = len(set(suits)) == 1
-        is_straight, straight_high = HandEvaluator._check_straight(ranks)
+        sorted_ranks = sorted(ranks, reverse=True)
+        is_straight = sorted_ranks == list(range(sorted_ranks[0], sorted_ranks[0]-5, -1))
         
-        rank_counts = {}
-        for r in ranks:
-            rank_counts[r] = rank_counts.get(r, 0) + 1
+        # Ace-low straight (A-2-3-4-5)
+        if sorted_ranks == [14, 5, 4, 3, 2]:
+            is_straight = True
+            sorted_ranks = [5, 4, 3, 2, 1]
+        
+        rank_counts = defaultdict(int)
+        for rank in ranks:
+            rank_counts[rank] += 1
         
         counts = sorted(rank_counts.values(), reverse=True)
         
-        # Royal Flush
-        if is_flush and is_straight and ranks == [14, 13, 12, 11, 10]:
-            return (10000000, "Royal Flush")
+        # Score: 1M-10M range (higher = better hand)
+        score = 0
         
-        # Straight Flush
-        if is_flush and is_straight:
-            return (9000000 + straight_high * 1000, "Straight Flush")
+        if is_straight and is_flush:
+            score = 8000000 + sorted_ranks[0] * 1000  # Royal/Straight Flush
+        elif counts == [4, 1]:
+            score = 7000000 + max(rank_counts, key=lambda k: rank_counts[k] if rank_counts[k] == 4 else 0) * 1000  # Four of a Kind
+        elif counts == [3, 2]:
+            score = 6000000 + max(rank_counts, key=lambda k: rank_counts[k] if rank_counts[k] == 3 else 0) * 1000  # Full House
+        elif is_flush:
+            score = 5000000 + sum(sorted_ranks) * 10  # Flush
+        elif is_straight:
+            score = 4000000 + sorted_ranks[0] * 1000  # Straight
+        elif counts == [3, 1, 1]:
+            score = 3000000 + max(rank_counts, key=lambda k: rank_counts[k] if rank_counts[k] == 3 else 0) * 1000  # Three of a Kind
+        elif counts == [2, 2, 1]:
+            score = 2000000 + sum([k for k in rank_counts if rank_counts[k] == 2]) * 1000  # Two Pair
+        elif counts == [2, 1, 1, 1]:
+            score = 1000000 + max(rank_counts, key=lambda k: rank_counts[k] if rank_counts[k] == 2 else 0) * 1000  # One Pair
+        else:
+            score = sorted_ranks[0] * 10000 + sum(sorted_ranks) * 100  # High Card
         
-        # Four of a Kind
-        if counts == [4, 1]:
-            quad_rank = [r for r, c in rank_counts.items() if c == 4][0]
-            return (8000000 + quad_rank * 1000, "Four of a Kind")
-        
-        # Full House
-        if counts == [3, 2]:
-            trip_rank = [r for r, c in rank_counts.items() if c == 3][0]
-            pair_rank = [r for r, c in rank_counts.items() if c == 2][0]
-            return (7000000 + trip_rank * 1000 + pair_rank, "Full House")
-        
-        # Flush
-        if is_flush:
-            return (6000000 + sum(ranks) * 10, "Flush")
-        
-        # Straight
-        if is_straight:
-            return (5000000 + straight_high * 1000, "Straight")
-        
-        # Three of a Kind
-        if counts == [3, 1, 1]:
-            trip_rank = [r for r, c in rank_counts.items() if c == 3][0]
-            return (4000000 + trip_rank * 1000, "Three of a Kind")
-        
-        # Two Pair
-        if counts == [2, 2, 1]:
-            pairs = sorted([r for r, c in rank_counts.items() if c == 2], reverse=True)
-            return (3000000 + pairs[0] * 1000 + pairs[1] * 100, "Two Pair")
-        
-        # One Pair
-        if counts == [2, 1, 1, 1]:
-            pair_rank = [r for r, c in rank_counts.items() if c == 2][0]
-            return (2000000 + pair_rank * 1000, "Pair")
-        
-        # High Card
-        return (1000000 + sum(ranks) * 10, "High Card")
+        return score
     
     @staticmethod
-    def _check_straight(ranks: List[int]) -> Tuple[bool, int]:
-        """Returns (is_straight, high_card)"""
-        if ranks == list(range(ranks[0], ranks[0] - 5, -1)):
-            return (True, ranks[0])
+    def best_hand(hole_cards, community_cards):
+        """Find best 5-card hand from 7 cards"""
+        from itertools import combinations
+        all_cards = hole_cards + community_cards
+        best_score = 0
+        best = None
         
-        # Check for A-2-3-4-5 (wheel)
-        if ranks == [14, 5, 4, 3, 2]:
-            return (True, 5)
+        for combo in combinations(all_cards, 5):
+            score = HandEvaluator.evaluate(list(combo))
+            if score > best_score:
+                best_score = score
+                best = combo
         
-        return (False, 0)
+        return best, best_score
 
-# ============================================================================
-# PLAYER & AI
-# ============================================================================
-
-@dataclass
 class Player:
-    name: str
-    stack: int
-    hole_cards: List[Card]
-    position: Tuple[int, int]
-    is_human: bool = False
-    
-    def __post_init__(self):
+    def __init__(self, name, is_ai=False):
+        self.name = name
+        self.stack = 1000
+        self.hole_cards = []
         self.current_bet = 0
         self.total_bet = 0
-        self.folded = False
-        self.all_in = False
+        self.is_folded = False
+        self.is_ai = is_ai
+        self.position = 0
     
     def reset_hand(self):
         self.hole_cards = []
         self.current_bet = 0
-        self.total_bet = 0
-        self.folded = False
-        self.all_in = False
-    
-    def can_act(self) -> bool:
-        return not self.folded and not self.all_in and self.stack > 0
+        self.is_folded = False
 
-class AIPlayer(Player):
-    """Simple AI that uses hand strength and position to decide actions."""
-    
-    def decide_action(self, current_bet: int, phase: GamePhase, 
-                     community_cards: List[Card]) -> Tuple[ActionType, int]:
-        """AI decision logic."""
-        
-        if self.stack == 0:
-            return (ActionType.FOLD, 0)
-        
-        amount_to_call = current_bet - self.current_bet
-        
-        # Check hand strength
-        all_cards = self.hole_cards + community_cards
-        score, hand_name = HandEvaluator.evaluate(all_cards)
-        hand_strength = (score % 10000000) / 10000000
-        
-        # Aggression increases as hand gets stronger and as we progress
-        phase_factor = {GamePhase.PRE_FLOP: 0.7, GamePhase.FLOP: 0.8, 
-                       GamePhase.TURN: 0.9, GamePhase.RIVER: 0.95}.get(phase, 0.5)
-        
-        aggression = hand_strength * phase_factor
-        
-        # Decision tree
-        if amount_to_call == 0:
-            # Can check
-            if aggression > 0.6:
-                raise_amount = int(self.stack * 0.2) if self.stack > 20 else self.stack
-                return (ActionType.RAISE, raise_amount)
-            return (ActionType.CHECK, 0)
-        
-        if amount_to_call > self.stack * 0.3:
-            # Expensive bet
-            if aggression > 0.75:
-                return (ActionType.ALL_IN, self.stack)
-            elif aggression > 0.4:
-                return (ActionType.CALL, amount_to_call)
-            else:
-                return (ActionType.FOLD, 0)
-        
-        # Normal bet
-        if aggression > 0.6:
-            raise_amount = min(int(amount_to_call * 1.5), self.stack - amount_to_call)
-            return (ActionType.RAISE, raise_amount)
-        elif aggression > 0.3:
-            return (ActionType.CALL, amount_to_call)
-        else:
-            return (ActionType.FOLD, 0)
-
-# ============================================================================
-# GAME ENGINE
-# ============================================================================
-
-class PokerGame:
+class Game:
     def __init__(self):
-        self.players = []
-        self.dealer_button = 0
-        self.small_blind = 1
-        self.big_blind = 2
-        self.community_cards = []
-        self.pot = 0
-        self.current_bet = 0
-        self.current_player_idx = 0
-        self.phase = GamePhase.PRE_FLOP
-        self.deck = None
-        self.action_history = []
+        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        pygame.display.set_caption("Texas Hold'em Poker")
+        self.clock = pygame.time.Clock()
+        self.font_large = pygame.font.Font(None, 48)
+        self.font_medium = pygame.font.Font(None, 32)
+        self.font_small = pygame.font.Font(None, 24)
+        self.font_tiny = pygame.font.Font(None, 20)
         
-        # Create players
+        # Game state
         self.players = [
-            Player("You", 1000, [], (200, 650), is_human=True),
-            AIPlayer("NPC (Alex)", 1000, [], (600, 100)),
-            Player("Dealer", 1000, [], (1000, 650), is_human=False),
+            Player("You", is_ai=False),
+            Player("NPC", is_ai=True),
+            Player("Dealer", is_ai=True)
         ]
+        self.current_player_idx = 0
+        self.dealer_idx = 2
+        self.button_idx = 2
+        self.small_blind_idx = 0
+        self.big_blind_idx = 1
         
-        self.start_hand()
-    
-    def start_hand(self):
-        """Initialize a new hand."""
-        self.deck = Deck()
+        self.deck = []
         self.community_cards = []
         self.pot = 0
-        self.current_bet = 0
-        self.phase = GamePhase.PRE_FLOP
-        self.action_history = []
+        self.current_bet_level = 20  # BB amount
+        self.phase = GamePhase.PREFLOP
+        self.round_complete = False
+        self.game_message = ""
+        self.message_timer = 0
         
-        # Reset player state
-        for p in self.players:
-            p.reset_hand()
+        # UI State
+        self.action_buttons = {
+            'fold': pygame.Rect(150, 750, 100, 50),
+            'check': pygame.Rect(300, 750, 100, 50),
+            'call': pygame.Rect(450, 750, 100, 50),
+            'raise': pygame.Rect(600, 750, 100, 50),
+            'all_in': pygame.Rect(750, 750, 100, 50),
+        }
+        self.raise_amount = 20
+        self.game_over = False
+        self.winner = None
+        
+        self.start_new_game()
+    
+    def start_new_game(self):
+        """Initialize a new hand"""
+        if self.game_over:
+            return
+        
+        for player in self.players:
+            player.reset_hand()
+        
+        self.community_cards = []
+        self.pot = 0
+        self.phase = GamePhase.PREFLOP
+        self.round_complete = False
+        self.game_message = ""
         
         # Post blinds
-        self.small_blind_idx = (self.dealer_button + 1) % 3
-        self.big_blind_idx = (self.dealer_button + 2) % 3
+        self.players[self.small_blind_idx].stack -= 10
+        self.players[self.big_blind_idx].stack -= 20
+        self.pot = 30
+        self.current_bet_level = 20
         
-        sb_amount = 10
-        bb_amount = 20
-        
-        self.players[self.small_blind_idx].current_bet = sb_amount
-        self.players[self.small_blind_idx].total_bet = sb_amount
-        self.players[self.small_blind_idx].stack -= sb_amount
-        
-        self.players[self.big_blind_idx].current_bet = bb_amount
-        self.players[self.big_blind_idx].total_bet = bb_amount
-        self.players[self.big_blind_idx].stack -= bb_amount
-        
-        self.pot = sb_amount + bb_amount
-        self.current_bet = bb_amount
+        self.players[self.small_blind_idx].total_bet = 10
+        self.players[self.big_blind_idx].total_bet = 20
         
         # Deal hole cards
-        for _ in range(2):
-            for p in self.players:
-                p.hole_cards.append(self.deck.draw())
+        self.deck = self.create_deck()
+        for player in self.players:
+            player.hole_cards = [self.deck.pop(), self.deck.pop()]
         
-        # First to act is small blind in heads-up, else UTG
-        self.current_player_idx = (self.big_blind_idx + 1) % 3
-        self.action_history = []
+        # Start with player to act after BB (UTG in 3-player)
+        self.current_player_idx = 0
+        self.action_buttons['raise'].rect = pygame.Rect(600, 750, 100, 50)
+    
+    def create_deck(self):
+        """Create and shuffle deck"""
+        deck = []
+        for suit in Suit:
+            for rank in Card.RANKS:
+                deck.append(Card(rank, suit))
+        random.shuffle(deck)
+        return deck
     
     def advance_phase(self):
-        """Move to next betting phase."""
-        if self.phase == GamePhase.PRE_FLOP:
-            # Flop: 3 cards
-            for _ in range(3):
-                self.community_cards.append(self.deck.draw())
+        """Move to next phase and deal community cards"""
+        if self.phase == GamePhase.PREFLOP:
             self.phase = GamePhase.FLOP
+            self.community_cards.extend([self.deck.pop(), self.deck.pop(), self.deck.pop()])
         elif self.phase == GamePhase.FLOP:
-            # Turn: 1 card
-            self.community_cards.append(self.deck.draw())
             self.phase = GamePhase.TURN
+            self.community_cards.append(self.deck.pop())
         elif self.phase == GamePhase.TURN:
-            # River: 1 card
-            self.community_cards.append(self.deck.draw())
             self.phase = GamePhase.RIVER
+            self.community_cards.append(self.deck.pop())
         elif self.phase == GamePhase.RIVER:
             self.phase = GamePhase.SHOWDOWN
         
-        # Reset bets for new phase
-        self.current_bet = 0
-        for p in self.players:
-            p.current_bet = 0
-        
-        # Next to act is first non-folded after button
-        self.current_player_idx = (self.dealer_button + 1) % 3
-    
-    def get_active_players(self) -> List[Player]:
-        """Get players still in the hand."""
-        return [p for p in self.players if not p.folded]
-    
-    def player_action(self, action: ActionType, amount: int = 0):
-        """Process a player action."""
-        player = self.players[self.current_player_idx]
-        
-        if action == ActionType.FOLD:
-            player.folded = True
-        
-        elif action == ActionType.CHECK:
-            pass
-        
-        elif action == ActionType.CALL:
-            amount_to_call = self.current_bet - player.current_bet
-            actual_amount = min(amount_to_call, player.stack)
-            player.stack -= actual_amount
-            player.current_bet += actual_amount
-            player.total_bet += actual_amount
-            self.pot += actual_amount
-        
-        elif action == ActionType.RAISE:
-            amount_to_call = self.current_bet - player.current_bet
-            actual_raise = min(amount, player.stack - amount_to_call)
-            total_amount = amount_to_call + actual_raise
-            
-            player.stack -= total_amount
-            player.current_bet += total_amount
-            player.total_bet += total_amount
-            self.pot += total_amount
-            
-            self.current_bet = player.current_bet
-        
-        elif action == ActionType.ALL_IN:
-            amount_to_call = self.current_bet - player.current_bet
-            actual_amount = min(amount_to_call + amount, player.stack)
-            
-            player.stack -= actual_amount
-            player.current_bet += actual_amount
-            player.total_bet += actual_amount
-            self.pot += actual_amount
-            player.all_in = True
-            
-            if actual_amount > amount_to_call:
-                self.current_bet = player.current_bet
-        
-        self.action_history.append((player.name, action.name, amount))
-        self.next_player()
+        self.current_bet_level = 0
+        for player in self.players:
+            player.current_bet = 0
     
     def next_player(self):
-        """Move to next player who can act."""
-        active = self.get_active_players()
+        """Move to next player who hasn't folded"""
+        players_in = sum(1 for p in self.players if not p.is_folded)
         
-        if len(active) == 1:
-            # Only one player left, award pot
-            self.phase = GamePhase.HAND_OVER
+        if players_in <= 1:
+            self.end_hand()
             return
         
-        # Check if betting round is over
-        bets_equal = all(p.current_bet == self.current_bet for p in active)
-        all_in_or_acted = all(p.all_in or p.current_bet == self.current_bet for p in active)
-        
-        if bets_equal and all_in_or_acted:
-            # Round over
-            if self.phase == GamePhase.RIVER or len(active) == 1:
-                self.phase = GamePhase.SHOWDOWN
-            else:
-                self.advance_phase()
-            return
-        
-        # Next player in rotation
-        start_idx = self.current_player_idx
-        self.current_player_idx = (start_idx + 1) % 3
-        
-        while not self.players[self.current_player_idx].can_act():
-            self.current_player_idx = (self.current_player_idx + 1) % 3
-            if self.current_player_idx == start_idx:
+        for _ in range(len(self.players)):
+            self.current_player_idx = (self.current_player_idx + 1) % len(self.players)
+            if not self.players[self.current_player_idx].is_folded:
                 break
+        
+        # Check if betting round is complete
+        betting_complete = True
+        for i, player in enumerate(self.players):
+            if not player.is_folded:
+                if player.current_bet < self.current_bet_level and player.stack > 0:
+                    betting_complete = False
+                    break
+        
+        if betting_complete:
+            self.round_complete = True
     
-    def resolve_hand(self):
-        """Determine winner(s) and award pot."""
-        active = self.get_active_players()
+    def player_action(self, action, amount=0):
+        """Process player action"""
+        player = self.players[self.current_player_idx]
         
-        if len(active) == 1:
-            active[0].stack += self.pot
-            self.phase = GamePhase.HAND_OVER
-            return active[0]
+        if action == "fold":
+            player.is_folded = True
+            self.game_message = f"{player.name} folds"
+            self.message_timer = 60
         
-        # Showdown: evaluate all hands
-        best_score = -1
-        winner = None
+        elif action == "check":
+            self.game_message = f"{player.name} checks"
+            self.message_timer = 60
         
-        for player in active:
-            all_cards = player.hole_cards + self.community_cards
-            score, hand_name = HandEvaluator.evaluate(all_cards)
-            if score > best_score:
-                best_score = score
-                winner = player
+        elif action == "call":
+            call_amount = min(self.current_bet_level - player.current_bet, player.stack)
+            player.stack -= call_amount
+            player.current_bet += call_amount
+            self.pot += call_amount
+            self.game_message = f"{player.name} calls {call_amount}"
+            self.message_timer = 60
+        
+        elif action == "raise":
+            raise_amount = min(amount, player.stack)
+            total_bet = self.current_bet_level - player.current_bet + raise_amount
+            total_bet = min(total_bet, player.stack)
+            
+            player.stack -= total_bet
+            self.pot += total_bet
+            player.current_bet = self.current_bet_level + raise_amount
+            self.current_bet_level = player.current_bet
+            self.game_message = f"{player.name} raises to {self.current_bet_level}"
+            self.message_timer = 60
+        
+        elif action == "all_in":
+            all_in_amount = player.stack
+            player.stack = 0
+            player.current_bet += all_in_amount
+            self.pot += all_in_amount
+            if player.current_bet > self.current_bet_level:
+                self.current_bet_level = player.current_bet
+            self.game_message = f"{player.name} goes all in!"
+            self.message_timer = 60
+        
+        self.next_player()
+    
+    def npc_action(self):
+        """AI decision making"""
+        player = self.players[self.current_player_idx]
+        if not player.is_ai:
+            return
+        
+        # Calculate hand strength
+        best_hand, score = HandEvaluator.best_hand(player.hole_cards, self.community_cards)
+        hand_strength = score / 10000000.0
+        
+        # Phase aggression factor
+        phase_factors = {
+            GamePhase.PREFLOP: 1.2,
+            GamePhase.FLOP: 1.0,
+            GamePhase.TURN: 0.9,
+            GamePhase.RIVER: 0.8
+        }
+        aggression = hand_strength * phase_factors.get(self.phase, 1.0)
+        
+        call_amount = self.current_bet_level - player.current_bet
+        
+        if call_amount == 0:
+            self.player_action("check")
+        elif aggression < 0.3:
+            self.player_action("fold")
+        elif aggression < 0.6:
+            if call_amount <= player.stack * 0.1:
+                self.player_action("call")
+            else:
+                self.player_action("fold")
+        elif aggression < 0.8:
+            self.player_action("call")
+        else:
+            raise_amount = int(self.current_bet_level * 0.5)
+            if player.stack > raise_amount:
+                self.player_action("raise", raise_amount)
+            else:
+                self.player_action("all_in")
+    
+    def end_hand(self):
+        """Determine winner and award pot"""
+        players_in = [p for p in self.players if not p.is_folded]
+        
+        if len(players_in) == 1:
+            winner = players_in[0]
+            self.game_message = f"{winner.name} wins {self.pot}!"
+        else:
+            # Showdown
+            best_score = -1
+            winner = None
+            
+            for player in players_in:
+                _, score = HandEvaluator.best_hand(player.hole_cards, self.community_cards)
+                if score > best_score:
+                    best_score = score
+                    winner = player
+            
+            self.game_message = f"{winner.name} wins {self.pot}!"
         
         winner.stack += self.pot
-        self.phase = GamePhase.HAND_OVER
-        return winner
-
-# ============================================================================
-# PYGAME RENDERING & GAME LOOP
-# ============================================================================
-
-class PokerUI:
-    def __init__(self):
-        pygame.init()
-        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        pygame.display.set_caption("Poker: You vs Dealer & NPC")
-        self.clock = pygame.time.Clock()
-        self.font_large = pygame.font.Font(None, 36)
-        self.font_medium = pygame.font.Font(None, 28)
-        self.font_small = pygame.font.Font(None, 20)
+        self.message_timer = 120
         
-        self.game = PokerGame()
-        self.selected_action = None
-        self.raise_amount = 0
-        self.message = "Game started! Blinds posted."
-        self.message_timer = 0
+        # Check game over
+        active_players = sum(1 for p in self.players if p.stack > 0)
+        if active_players <= 1:
+            self.game_over = True
+            self.winner = [p for p in self.players if p.stack > 0][0]
+            self.game_message = f"GAME OVER - {self.winner.name} wins!"
+        else:
+            # Reset for next hand
+            pygame.time.set_timer(pygame.USEREVENT, 2000)
     
-    def handle_events(self):
-        """Handle user input."""
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return False
+    def draw_card(self, card, x, y, hidden=False):
+        """Draw a single card"""
+        card_width, card_height = 60, 90
+        rect = pygame.Rect(x, y, card_width, card_height)
+        
+        if hidden:
+            pygame.draw.rect(self.screen, COLOR_BUTTON, rect)
+            pygame.draw.rect(self.screen, COLOR_TEXT, rect, 2)
+            self.screen.blit(self.font_tiny.render("?", True, COLOR_TEXT), (x + 20, y + 35))
+        else:
+            pygame.draw.rect(self.screen, COLOR_CARD_BG, rect)
+            pygame.draw.rect(self.screen, (0, 0, 0), rect, 2)
             
-            if event.type == pygame.KEYDOWN:
-                player = self.game.players[0]
-                
-                if player != self.game.players[self.game.current_player_idx]:
-                    continue
-                
-                if event.key == pygame.K_f:  # Fold
-                    self.game.player_action(ActionType.FOLD)
-                    self.message = f"{player.name} folded."
-                    self.message_timer = 120
-                
-                elif event.key == pygame.K_c:  # Check/Call
-                    amount_to_call = self.game.current_bet - player.current_bet
-                    if amount_to_call == 0:
-                        self.game.player_action(ActionType.CHECK)
-                        self.message = f"{player.name} checked."
-                    else:
-                        self.game.player_action(ActionType.CALL, amount_to_call)
-                        self.message = f"{player.name} called ${amount_to_call}."
-                    self.message_timer = 120
-                
-                elif event.key == pygame.K_r:  # Raise
-                    amount_to_call = self.game.current_bet - player.current_bet
-                    raise_amt = 50
-                    self.game.player_action(ActionType.RAISE, raise_amt)
-                    self.message = f"{player.name} raised ${raise_amt}."
-                    self.message_timer = 120
-                
-                elif event.key == pygame.K_a:  # All-in
-                    self.game.player_action(ActionType.ALL_IN, player.stack)
-                    self.message = f"{player.name} went all-in!"
-                    self.message_timer = 120
-        
-        return True
+            color = (255, 0, 0) if card.suit in [Suit.HEARTS, Suit.DIAMONDS] else (0, 0, 0)
+            rank_text = self.font_small.render(card.rank, True, color)
+            suit_text = self.font_medium.render(card.suit.value, True, color)
+            
+            self.screen.blit(rank_text, (x + 5, y + 5))
+            self.screen.blit(suit_text, (x + 20, y + 55))
     
-    def update(self):
-        """Update game state."""
-        if self.game.phase == GamePhase.HAND_OVER:
-            # Wait before starting new hand
-            if self.message_timer == 0:
-                self.game.dealer_button = (self.game.dealer_button + 1) % 3
-                self.game.start_hand()
-                self.message = "New hand started!"
-                self.message_timer = 120
+    def draw_player_info(self, player, x, y, is_current=False):
+        """Draw player information"""
+        bg_color = (100, 100, 100) if is_current else (50, 50, 50)
+        pygame.draw.rect(self.screen, bg_color, (x - 80, y - 60, 160, 120), border_radius=10)
         
-        elif self.game.phase == GamePhase.SHOWDOWN:
-            if self.message_timer == 0:
-                winner = self.game.resolve_hand()
-                self.message = f"{winner.name} won ${self.game.pot}!"
-                self.message_timer = 300
+        name_text = self.font_medium.render(player.name, True, COLOR_TEXT)
+        stack_text = self.font_small.render(f"${player.stack}", True, COLOR_CHIP_PLAYER)
+        bet_text = self.font_small.render(f"Bet: ${player.current_bet}", True, COLOR_CHIP_PLAYER)
         
-        elif self.game.current_player_idx > 0:
-            # NPC or Dealer turn
-            player = self.game.players[self.game.current_player_idx]
-            if not player.is_human and player.can_act():
-                action, amount = player.decide_action(
-                    self.game.current_bet,
-                    self.game.phase,
-                    self.game.community_cards
-                )
-                self.game.player_action(action, amount)
-                self.message = f"{player.name}: {action.name}"
-                if amount > 0:
-                    self.message += f" (${amount})"
-                self.message_timer = 180
+        self.screen.blit(name_text, (x - 60, y - 50))
+        self.screen.blit(stack_text, (x - 60, y - 10))
+        self.screen.blit(bet_text, (x - 60, y + 20))
         
-        if self.message_timer > 0:
-            self.message_timer -= 1
+        if player.is_folded:
+            fold_text = self.font_small.render("FOLDED", True, (255, 0, 0))
+            self.screen.blit(fold_text, (x - 60, y + 50))
+    
+    def draw_button(self, button_rect, text, is_hover=False):
+        """Draw button with hover effect"""
+        color = COLOR_BUTTON_HOVER if is_hover else COLOR_BUTTON
+        pygame.draw.rect(self.screen, color, button_rect, border_radius=5)
+        pygame.draw.rect(self.screen, COLOR_TEXT, button_rect, 2, border_radius=5)
+        
+        text_surface = self.font_small.render(text, True, COLOR_TEXT)
+        text_rect = text_surface.get_rect(center=button_rect.center)
+        self.screen.blit(text_surface, text_rect)
     
     def draw(self):
-        """Render game state."""
-        self.screen.fill((34, 139, 34))  # Green felt
+        """Render entire game"""
+        self.screen.fill(COLOR_BG)
         
         # Draw community cards
-        self._draw_community_cards()
+        com_x = 500
+        com_y = 150
+        self.screen.blit(self.font_medium.render("Community Cards", True, COLOR_TEXT), (com_x - 50, com_y - 50))
         
-        # Draw players
-        for i, player in enumerate(self.game.players):
-            self._draw_player(player, i == self.game.current_player_idx)
+        for i in range(5):
+            if i < len(self.community_cards):
+                self.draw_card(self.community_cards[i], com_x + i * 80, com_y)
+            else:
+                pygame.draw.rect(self.screen, (100, 100, 100), (com_x + i * 80, com_y, 60, 90))
         
         # Draw pot
-        pot_text = self.font_large.render(f"Pot: ${self.game.pot}", True, (255, 215, 0))
-        self.screen.blit(pot_text, (500, 350))
-        
-        # Draw current bet
-        bet_text = self.font_medium.render(f"Current bet: ${self.game.current_bet}", True, (255, 255, 255))
-        self.screen.blit(bet_text, (450, 300))
+        pot_text = self.font_large.render(f"Pot: ${self.pot}", True, COLOR_POT)
+        self.screen.blit(pot_text, (550, 50))
         
         # Draw phase
-        phase_text = self.font_medium.render(f"Phase: {self.game.phase.name}", True, (255, 255, 255))
-        self.screen.blit(phase_text, (10, 10))
+        phase_text = self.font_medium.render(f"Phase: {self.phase.value.upper()}", True, COLOR_TEXT)
+        self.screen.blit(phase_text, (1100, 50))
         
-        # Draw message
-        if self.message_timer > 0:
-            msg = self.font_small.render(self.message, True, (255, 255, 0))
-            self.screen.blit(msg, (400, 50))
+        # Draw players
+        # Player (bottom center)
+        player = self.players[0]
+        self.draw_player_info(player, 700, 800, is_current=(self.current_player_idx == 0))
+        self.draw_card(player.hole_cards[0], 620, 700)
+        self.draw_card(player.hole_cards[1], 700, 700)
         
-        # Draw controls (for human player)
-        controls_text = self.font_small.render("F: Fold | C: Call/Check | R: Raise | A: All-in", True, (200, 200, 200))
-        self.screen.blit(controls_text, (10, WINDOW_HEIGHT - 30))
+        # NPC (left)
+        player = self.players[1]
+        self.draw_player_info(player, 150, 300, is_current=(self.current_player_idx == 1))
+        self.draw_card(player.hole_cards[0], 50, 350, hidden=not self.game_over and self.phase != GamePhase.SHOWDOWN)
+        self.draw_card(player.hole_cards[1], 130, 350, hidden=not self.game_over and self.phase != GamePhase.SHOWDOWN)
+        
+        # Dealer (right)
+        player = self.players[2]
+        self.draw_player_info(player, 1250, 300, is_current=(self.current_player_idx == 2))
+        self.draw_card(player.hole_cards[0], 1170, 350, hidden=not self.game_over and self.phase != GamePhase.SHOWDOWN)
+        self.draw_card(player.hole_cards[1], 1250, 350, hidden=not self.game_over and self.phase != GamePhase.SHOWDOWN)
+        
+        # Draw action buttons (only for current player if human)
+        if self.current_player_idx == 0 and not self.players[0].is_folded and self.phase != GamePhase.SHOWDOWN:
+            player = self.players[0]
+            call_amount = self.current_bet_level - player.current_bet
+            
+            mouse_pos = pygame.mouse.get_pos()
+            
+            # Fold
+            self.draw_button(self.action_buttons['fold'], "Fold", self.action_buttons['fold'].collidepoint(mouse_pos))
+            
+            # Check/Call
+            if call_amount == 0:
+                self.draw_button(self.action_buttons['check'], "Check", self.action_buttons['check'].collidepoint(mouse_pos))
+            else:
+                self.draw_button(self.action_buttons['call'], f"Call {call_amount}", self.action_buttons['call'].collidepoint(mouse_pos))
+            
+            # Raise
+            self.draw_button(self.action_buttons['raise'], f"Raise", self.action_buttons['raise'].collidepoint(mouse_pos))
+            
+            # All in
+            self.draw_button(self.action_buttons['all_in'], "All In", self.action_buttons['all_in'].collidepoint(mouse_pos))
+        
+        # Draw messages
+        if self.game_message and self.message_timer > 0:
+            msg_text = self.font_medium.render(self.game_message, True, (255, 255, 100))
+            self.screen.blit(msg_text, (400, 450))
+            self.message_timer -= 1
+        
+        # Draw game over screen
+        if self.game_over:
+            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+            overlay.set_alpha(200)
+            overlay.fill((0, 0, 0))
+            self.screen.blit(overlay, (0, 0))
+            
+            winner_text = self.font_large.render(f"{self.winner.name} Wins!", True, (255, 215, 0))
+            final_stack = self.font_medium.render(f"Final Stack: ${self.winner.stack}", True, COLOR_TEXT)
+            
+            self.screen.blit(winner_text, (WINDOW_WIDTH // 2 - 200, WINDOW_HEIGHT // 2 - 50))
+            self.screen.blit(final_stack, (WINDOW_WIDTH // 2 - 150, WINDOW_HEIGHT // 2 + 50))
         
         pygame.display.flip()
     
-    def _draw_community_cards(self):
-        """Draw community cards in the center."""
-        start_x = 350
-        y = 200
+    def update(self):
+        """Update game logic"""
+        if self.game_over:
+            return
         
-        for i, card in enumerate(self.game.community_cards):
-            x = start_x + i * 70
-            self._draw_card(card, x, y)
+        # Handle end of phase
+        if self.round_complete and self.phase != GamePhase.SHOWDOWN:
+            self.round_complete = False
+            self.advance_phase()
+        elif self.phase == GamePhase.SHOWDOWN:
+            self.end_hand()
+            return
+        
+        # NPC turn
+        if self.current_player_idx != 0 and not self.players[self.current_player_idx].is_folded:
+            self.npc_action()
     
-    def _draw_player(self, player: Player, is_current: bool):
-        """Draw a player's info and cards."""
-        x, y = player.position
+    def handle_event(self, event):
+        """Handle user input"""
+        if event.type == pygame.QUIT:
+            return False
         
-        # Player name
-        color = (255, 215, 0) if is_current else (255, 255, 255)
-        name_text = self.font_medium.render(player.name, True, color)
-        self.screen.blit(name_text, (x - 50, y - 120))
+        if event.type == pygame.USEREVENT:
+            self.start_new_game()
         
-        # Stack
-        stack_text = self.font_small.render(f"${player.stack}", True, (100, 255, 100))
-        self.screen.blit(stack_text, (x - 30, y - 90))
+        if event.type == pygame.MOUSEBUTTONDOWN and self.current_player_idx == 0:
+            player = self.players[0]
+            
+            if self.action_buttons['fold'].collidepoint(event.pos):
+                self.player_action("fold")
+            elif self.action_buttons['check'].collidepoint(event.pos):
+                call_amount = self.current_bet_level - player.current_bet
+                if call_amount == 0:
+                    self.player_action("check")
+                else:
+                    self.player_action("call")
+            elif self.action_buttons['raise'].collidepoint(event.pos):
+                raise_amount = int(self.current_bet_level * 0.5)
+                self.player_action("raise", raise_amount)
+            elif self.action_buttons['all_in'].collidepoint(event.pos):
+                self.player_action("all_in")
         
-        # Current bet
-        if player.current_bet > 0:
-            bet_text = self.font_small.render(f"Bet: ${player.current_bet}", True, (255, 100, 100))
-            self.screen.blit(bet_text, (x - 40, y - 60))
-        
-        # Folded indicator
-        if player.folded:
-            fold_text = self.font_small.render("FOLDED", True, (100, 100, 100))
-            self.screen.blit(fold_text, (x - 40, y - 30))
-        
-        # All-in indicator
-        if player.all_in:
-            allin_text = self.font_small.render("ALL-IN", True, (255, 0, 0))
-            self.screen.blit(allin_text, (x - 40, y - 30))
-        
-        # Hole cards (only show for human or in showdown)
-        if (player.is_human or self.game.phase == GamePhase.SHOWDOWN) and player.hole_cards:
-            for i, card in enumerate(player.hole_cards):
-                self._draw_card(card, x - 40 + i * 70, y + 20)
-        elif player.hole_cards:
-            # Draw card back
-            for i in range(len(player.hole_cards)):
-                self._draw_card_back(x - 40 + i * 70, y + 20)
-    
-    def _draw_card(self, card: Card, x: int, y: int):
-        """Draw a card."""
-        pygame.draw.rect(self.screen, (255, 255, 255), (x, y, CARD_WIDTH, CARD_HEIGHT))
-        pygame.draw.rect(self.screen, (0, 0, 0), (x, y, CARD_WIDTH, CARD_HEIGHT), 2)
-        
-        card_text = self.font_medium.render(str(card), True, (0, 0, 0))
-        self.screen.blit(card_text, (x + 10, y + 10))
-    
-    def _draw_card_back(self, x: int, y: int):
-        """Draw card back (for hidden cards)."""
-        pygame.draw.rect(self.screen, (0, 0, 150), (x, y, CARD_WIDTH, CARD_HEIGHT))
-        pygame.draw.rect(self.screen, (100, 100, 200), (x, y, CARD_WIDTH, CARD_HEIGHT), 2)
+        return True
     
     def run(self):
-        """Main game loop."""
+        """Main game loop"""
         running = True
-        
         while running:
-            running = self.handle_events()
+            for event in pygame.event.get():
+                running = self.handle_event(event)
+            
             self.update()
             self.draw()
             self.clock.tick(FPS)
         
         pygame.quit()
-        sys.exit()
-
-# ============================================================================
-# ENTRY POINT
-# ============================================================================
 
 if __name__ == "__main__":
-    ui = PokerUI()
-    ui.run()
+    game = Game()
+    game.run()
